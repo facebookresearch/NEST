@@ -19,7 +19,7 @@ def generate(
     model.eval()
     pad_id = model.pad_id
     tokenizer = model.tokenizer
-    prompt_tokens = [tokenizer.encode(t) for t in prompt]
+    prompt_tokens = [tokenizer(t)["input_ids"] for t in prompt]
     prompt_tokens = [
         t if len(t) < max_prompt_len else t[len(t) - max_prompt_len :]
         for t in prompt_tokens
@@ -37,18 +37,12 @@ def generate(
     prev_pos = 0
     curr_pos = start_pos
     ngram_mask = None
-    all_cache = None
+    prev_cache = None
     while curr_pos < end_pos:
-        if all_cache is None:
-            cache = None
-        else:
-            cache = [(c0[:, :, :prev_pos], c1[:, :, :prev_pos]) for c0, c1 in all_cache]
-        
-        logits, _ = model(tokens[:, prev_pos:curr_pos], cache=cache, ngram_mask=ngram_mask)
-        
-        if all_cache is None:
-            all_cache = cache
-        
+        logits, cache = model(tokens[:, prev_pos:curr_pos], cache=prev_cache, ngram_mask=ngram_mask)
+        if prev_cache is None:
+            prev_cache = cache
+
         knn_raw_scores = model.logs["knn_raw_scores"]
         knn_tokens = model.logs["knn_tokens"]
         knn_docids = model.logs["knn_docids"]
@@ -75,7 +69,7 @@ def generate(
         next_token_group = torch.where(knn_inter_coef >= beta, 0, 1)
         
         # select the top-num_branch n-grams
-        _, knn_topk_indices = torch.topk(knn_raw_scores, dim=-1, k=model.num_branch)
+        _, knn_topk_indices = torch.topk(knn_raw_scores, dim=-1, k=1)
         knn_topk_indices = knn_topk_indices.unsqueeze(-1).tile((1, 1, knn_tokens.shape[-1]))
         knn_tokens = torch.gather(knn_tokens, dim=1, index=knn_topk_indices)[:, 0]
         knn_docids = torch.gather(knn_docids, dim=1, index=knn_topk_indices)[:, 0]
@@ -116,7 +110,8 @@ def generate(
         else:
             tbe = torch.where(tokens_to_be_accepted != pad_id, tokens_to_be_accepted, tokenizer.eos_token_id)
             tbe = torch.cat([tokens[:, curr_pos-1:curr_pos], tbe[:, :-1]], -1)
-            acception_logits, cache = model(tbe, cache=all_cache, mode="evaluation")
+            prev_cache = [(c1[:, :, :-1], c2[:, :, :-1]) for c1, c2 in cache] if prev_pos == 0 else prev_cache
+            acception_logits, cache = model(tbe, cache=prev_cache, mode="evaluation")
 
         # rejection sampling / decoding
         acception_dist = torch.softmax(acception_logits, dim=-1).view(-1, acception_logits.shape[-1])
@@ -160,12 +155,10 @@ def generate(
         batch_idx = torch.arange(tokens.shape[0]).to(tokens.device)
         knn_ids = doc_ids[batch_idx, curr_pos + move_forward - 1] * model.token_index.max_len + poses[batch_idx, curr_pos + move_forward - 1]
         ngram_mask = torch.where((tokens_to_be_accepted_mask[batch_idx, move_forward - 1] > 0) & (doc_ids[batch_idx, curr_pos + move_forward - 1] != pad_id) & (poses[batch_idx, curr_pos + move_forward - 1] != pad_id), knn_ids, pad_id)
-        span_count = span_count + torch.where(ngram_mask == pad_id, 1, 0) * torch.where(tokens[:, curr_pos] == tokenizer.eos_token_id, 0, 1)
-
         # move forward and setup cache
         curr_pos += move_forward
         prev_pos = curr_pos - 1
-        all_cache = [(torch.cat([old_c1, new_c1[:, :, :move_forward - 1]], 2), torch.cat([old_c2, new_c2[:, :, :move_forward - 1]], 2)) for (new_c1, new_c2), (old_c1, old_c2) in zip(cache, all_cache)]
+        prev_cache = [(c1[:, :, :curr_pos], c2[:, :, :curr_pos]) for c1, c2 in cache]
 
     generated_tokens = [
         t[len(prompt_tokens[i]) : len(prompt_tokens[i]) + max_gen_len].tolist()

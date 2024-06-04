@@ -1,5 +1,5 @@
 from typing import Optional, Tuple, List, Callable, Dict, Any
-
+from tqdm import tqdm
 import json
 import faiss
 import numpy as np
@@ -13,12 +13,12 @@ from pyserini.search.lucene import LuceneSearcher
 from multiprocessing import Pool
 
 class TokenIndex(object):
-    def __init__(self, pad_id=-1, window=1, sub_batch_size=40):
+    def __init__(self, pad_id=-1, window=1, sub_batch_size=10):
         self.window = window
         self.pad_id = pad_id
         self.sub_batch_size = sub_batch_size
     
-    def build_index(self, model, layer_key, doc_ids, tokens, token_poses):
+    def build_index(self, model, doc_ids, tokens, token_poses):
         bsz, passage_k = doc_ids.shape
         max_len = tokens.shape[-1] - 1
         knn_ids = doc_ids.view(-1, 1) * max_len + token_poses[:, 1:]
@@ -28,15 +28,15 @@ class TokenIndex(object):
         unmasked_tokens = torch.where(tokens[:, :-1] !=  self.pad_id, tokens[:, :-1], 0)    
         effective_tok_embeddings = []
         for i in range(0, unmasked_tokens.shape[0], self.sub_batch_size):
-            model(unmasked_tokens[i:i+self.sub_batch_size])
-            tok_embeddings = model.logs[layer_key]
+            outputs = model(unmasked_tokens[i:i+self.sub_batch_size], output_hidden_states=True)
+            tok_embeddings = outputs.hidden_states[-2]
             tok_embeddings = tok_embeddings.contiguous().view(-1, tok_embeddings.shape[-1])
             effective_tok_embeddings.append(tok_embeddings[token_mask[i:i+self.sub_batch_size].reshape((-1,))])
         effective_tok_embeddings = torch.cat(effective_tok_embeddings, 0)
         token_mask = token_mask.reshape((-1,))
 
-        self.tok_embeddings = torch.zeros(bsz * max_len * passage_k, effective_tok_embeddings.shape[-1]).cuda().to(torch.bfloat16)
-        self.tok_square = torch.zeros(bsz * max_len * passage_k).cuda().to(torch.bfloat16)
+        self.tok_embeddings = torch.zeros(bsz * max_len * passage_k, effective_tok_embeddings.shape[-1]).cuda().to(torch.half)
+        self.tok_square = torch.zeros(bsz * max_len * passage_k).cuda().to(torch.half)
         self.tok_mask = torch.zeros(bsz * max_len * passage_k).cuda().to(torch.int32)
 
         self.tok_embeddings[token_mask] = effective_tok_embeddings
@@ -114,7 +114,7 @@ class KNNTransformer(torch.nn.Module):
                        corpus_path: str = None, # data store
                        sparse_passage_dir: str = None, # sparse index path
                        dense_passage_dir: str = None, # dense index path
-                       dense_rerank: bool = False, # whether to rerank on sparse
+                       dense_rerank: bool = True, # whether to rerank on sparse
                        threads: int = 32, # threads for sparse/dense search
                        n_probe: int = 32,  # probs for dense ivf index search
                        passage_k: int = 10, # top-k passages
@@ -130,8 +130,8 @@ class KNNTransformer(torch.nn.Module):
         super().__init__()
         self.lm_model = AutoModelForCausalLM.from_pretrained(lm_model)
         self.tokenizer = AutoTokenizer.from_pretrained(lm_model)
-        self.passage_qry_model = AutoModel(retrieval_qry_model)
-        self.passage_ctx_model = AutoModel(retrieval_ctx_model)
+        self.passage_qry_model = AutoModel.from_pretrained(retrieval_qry_model).half()
+        self.passage_ctx_model = AutoModel.from_pretrained(retrieval_ctx_model).half()
         self.passage_tokenizer = AutoTokenizer.from_pretrained(retrieval_qry_model)
         # Passage-level index
         self.threads = threads
@@ -141,11 +141,11 @@ class KNNTransformer(torch.nn.Module):
         if corpus_path is not None:
             if pre_tokenized:
                 print("Loading knn token corpus...")
-                self.corpus_tokens = np.load(corpus_path) #, mmap_mode='r+')
+                self.corpus_tokens = np.load(corpus_path, mmap_mode='r+')
             else:
                 print("Loading corpus...")
                 with open(corpus_path, "r", encoding="utf-8") as f, Pool(threads) as p:
-                    self.corpus = list(p.imap(json.loads, f, 4000))
+                    self.corpus = list(tqdm(p.imap(json.loads, f, 4000)), total=33176581)
 
         if not pre_retrieved:
             if dense_passage_dir is not None:
@@ -192,29 +192,47 @@ class KNNTransformer(torch.nn.Module):
 
     def retrieve_passage(self, queries, query_inputs):
         sub_n = 4000
-        if self.sparse_passage_index is not None:
-            batch_hits = self.sparse_passage_index.batch_search(queries, [str(i) for i in range(len(queries))], k=sub_n, threads=self.threads)
-            sparse_doc_ids = np.zeros((len(queries), sub_n), dtype=np.int64)
-            sparse_doc_scores = np.zeros((len(queries), sub_n), dtype=np.float32)
-            for i, hits in batch_hits.items():
-                for j, hit in enumerate(hits):
-                    sparse_doc_ids[int(i)][j] = hit.docid
-                    sparse_doc_scores[int(i)][j] = hit.score
+        batch_hits = self.sparse_passage_index.batch_search(queries, [str(i) for i in range(len(queries))], k=sub_n, threads=self.threads)
+        sparse_doc_ids = np.zeros((len(queries), sub_n), dtype=np.int64)
+        sparse_doc_scores = np.zeros((len(queries), sub_n), dtype=np.float32)
+        for i, hits in batch_hits.items():
+            for j, hit in enumerate(hits):
+                sparse_doc_ids[int(i)][j] = hit.docid
+                sparse_doc_scores[int(i)][j] = hit.score
         
-        if self.dense_passage_index is not None:
-            query_inputs = {k:v.cuda() for k, v in query_inputs.items()}
-            query_embeddings = self.passage_query_model(**query_inputs).last_hidden_state[:, 0, :].detach().cpu().numpy().astype(np.float32)
-            dense_doc_scores, dense_doc_ids = self.dense_passage_index.search(query_embeddings, k=sub_n)
+        # if self.dense_passage_index is not None:
+        #     query_inputs = {k:v.cuda() for k, v in query_inputs.items()}
+        #     query_embeddings = self.passage_qry_model(**query_inputs).last_hidden_state[:, 0, :].detach().cpu().numpy().astype(np.float32)
+        #     dense_doc_scores, dense_doc_ids = self.dense_passage_index.search(query_embeddings, k=sub_n)
         
-        if self.dense_passage_index is not None and self.sparse_passage_index is not None:
-            sparse_coef = (1 - sparse_doc_scores[:, 100] / sparse_doc_scores.max(-1))
-            dense_coef = (1 - np.where(dense_doc_scores[:, 100] > 0, dense_doc_scores[:, 100], 0) / dense_doc_scores.max(-1))
-            fusion_coef = (1 - self.fusion_coef) * (1 - sparse_coef) + self.fusion_coef * dense_coef
-            doc_ids, doc_scores = self.fusion(dense_doc_scores, dense_doc_ids, sparse_doc_scores, sparse_doc_ids, k=self.passage_k, fusion_coef=fusion_coef)
-            return doc_scores, doc_ids
-
-        doc_ids = dense_doc_ids[:, :self.passage_k] if self.dense_passage_index is not None else sparse_doc_ids[:, :self.passage_k]
-        doc_scores = dense_doc_scores[:, :self.passage_k] if self.dense_passage_index is not None else sparse_doc_scores[:, :self.passage_k]
+        # elif self.dense_rerank:
+        #     query_inputs = {k:v.cuda() for k, v in query_inputs.items()}
+        #     query_embeddings = self.passage_qry_model(**query_inputs).last_hidden_state[:, 0, :]
+        #     if self.pre_tokenized:
+        #         batch_docs = [[self.tokenizer.decode(self.corpus_tokens[int(doc_id)].tolist()) for doc_id in doc_ids] for doc_ids in sparse_doc_ids]
+        #     else:
+        #         batch_docs = [[self.corpus[int(doc_id)]['title'] + " " + self.corpus[int(doc_id)]['text'] for doc_id in doc_ids] for doc_ids in sparse_doc_ids]
+        #     dense_doc_scores, dense_doc_ids = [], []
+        #     for q_embed, docs, doc_ids in zip(query_embeddings, batch_docs, sparse_doc_ids):
+        #         doc_inputs = self.passage_tokenizer(docs, padding=True, truncation=True, return_tensors='pt', max_length=256)
+        #         doc_inputs = {k:v.cuda() for k, v in doc_inputs.items()}
+        #         ctx_emb = self.passage_ctx_model(**doc_inputs).last_hidden_state[:, 0, :]
+        #         scores = torch.matmul(ctx_emb, q_embed)
+        #         out = torch.topk(scores, sub_n)
+        #         scores, idx = out.values, out.indices
+        #         dense_doc_scores.append(scores.cpu().numpy().astype(np.float32))
+        #         dense_doc_ids.append(doc_ids[idx.cpu().numpy()])
+        #     dense_doc_scores = np.stack(dense_doc_scores, 0)
+        #     dense_doc_ids = np.stack(dense_doc_ids, 0)
+        # else:
+        doc_ids = sparse_doc_ids[:, :self.passage_k]
+        doc_scores = sparse_doc_scores[:, :self.passage_k]
+        return doc_scores, doc_ids
+        
+        sparse_coef = (1 - sparse_doc_scores[:, 100] / sparse_doc_scores.max(-1))
+        dense_coef = (1 - np.where(dense_doc_scores[:, 100] > 0, dense_doc_scores[:, 100], 0) / dense_doc_scores.max(-1))
+        fusion_coef = (1 - self.fusion_coef) * (1 - sparse_coef) + self.fusion_coef * dense_coef
+        doc_ids, doc_scores = self.fusion(dense_doc_scores, dense_doc_ids, sparse_doc_scores, sparse_doc_ids, k=self.passage_k, fusion_coef=fusion_coef)
         return doc_scores, doc_ids
 
     def compute_inter_coef(self, knn_scores):
@@ -231,7 +249,7 @@ class KNNTransformer(torch.nn.Module):
         self.logs = {} 
         # LM prediction
         outputs = self.lm_model(tokens, output_hidden_states=True, past_key_values=cache)
-        logits = outputs.logits
+        lm_logits = outputs.logits
         cache = outputs.past_key_values
         h = outputs.hidden_states[-2]
 
@@ -255,7 +273,7 @@ class KNNTransformer(torch.nn.Module):
             # KNN search
             raw_knn_scores, vals, doc_ids, poses = self.token_index.search(h.contiguous(), self.token_k, ngram_mask)
             # Gather knn prob
-            knn_raw_probs = F.softmax(raw_knn_scores.to(torch.float32) / (self.tau_coef * self.lm_model.dim**0.5), dim=-1)
+            knn_raw_probs = F.softmax(raw_knn_scores.to(torch.float32) / (h.shape[-1]**0.5), dim=-1)
             out = torch.zeros(vals.shape[0], lm_logits.shape[-1]).to(knn_raw_probs.device).to(knn_raw_probs.dtype)
             knn_probs = torch_scatter.scatter_add(src=knn_raw_probs, index=torch.where(vals == -1, 0, vals)[:, :, 0], out=out)
             knn_probs[:, 0] = 0
@@ -279,14 +297,14 @@ class KNNTransformer(torch.nn.Module):
                 total_docids = torch.zeros_like(static_docids[:1]).tile((tokens.shape[0], self.token_k, 1))
                 total_poses = torch.zeros_like(static_poses[:1]).tile((tokens.shape[0], self.token_k, 1))
                 total_knn_raw_scores = torch.zeros(tokens.shape[0], self.token_k).to(static_vals.device)
-                total_logits = torch.zeros(tokens.shape[0], self.tokenizer.n_words * 2).to(static_vals.device)
+                total_logits = torch.zeros(tokens.shape[0], self.tokenizer.vocab_size * 2).to(static_vals.device)
                 total_inter_coef = torch.zeros(tokens.shape[0], 1).to(static_vals.device)
                 
                 total_vals[mask] = static_vals
                 total_docids[mask] = static_docids
                 total_poses[mask] = static_poses
                 tmp_logits = total_logits[mask]
-                tmp_logits[torch.arange(num_static).to(static_vals.device), torch.where(static_vals == -1, 0, static_vals)[:, 0, 0] + self.tokenizer.n_words] = 1
+                tmp_logits[torch.arange(num_static).to(static_vals.device), torch.where(static_vals == -1, 0, static_vals)[:, 0, 0] + self.tokenizer.vocab_size] = 1
                 tmp_logits[:, 0] = 0
                 total_logits[mask] = tmp_logits
                 if num_forward > 0:
@@ -327,7 +345,6 @@ class KNNTransformer(torch.nn.Module):
     def build_token_index(self, batch_doc_ids):
         bsz, passage_k = batch_doc_ids.shape
         self.token_index = TokenIndex(self.pad_id, self.window)
-
         if not self.pre_tokenized:
             batch_docs = [[self.corpus[doc_id] for doc_id in doc_ids] for doc_ids in batch_doc_ids]
             tokens, token_poses = self.encode(batch_docs)
@@ -338,11 +355,11 @@ class KNNTransformer(torch.nn.Module):
             token_poses = np.tile(np.arange(tokens.shape[1])[None, :], (tokens.shape[0], 1))
             token_poses = np.where(tokens != self.pad_id, token_poses, self.pad_id)
             doc_ids = doc_ids.reshape((bsz, passage_k))
-
+        
         doc_ids = torch.from_numpy(doc_ids).cuda()
         tokens = torch.from_numpy(tokens).cuda()
         token_poses = torch.from_numpy(token_poses).cuda()
-        self.token_index.build_index(self.lm_model, self.layer_key, doc_ids, tokens, token_poses)
+        self.token_index.build_index(self.lm_model, doc_ids, tokens, token_poses)
     
     def mask_token_index(self, doc_ids, token_poses):
         self.token_index.mask_vectors(doc_ids, token_poses)
@@ -352,7 +369,7 @@ class KNNTransformer(torch.nn.Module):
         for supports in k_supports:
             for entry in supports:
                 title, d = entry['title'], entry['text']
-                d_token = self.tokenizer.encode(f"{title} {d}", bos=True, eos=False)
+                d_token = self.tokenizer(f"{title} {d}")
                 tokens.append(d_token)
                 d_lens.append(len(d_token))
         max_len = max([len(x) for x in tokens])
