@@ -128,10 +128,10 @@ class KNNTransformer(torch.nn.Module):
                        fusion_coef: float = 0.3 # dense-sparse fusion weight
                        ):
         super().__init__()
-        self.lm_model = AutoModelForCausalLM.from_pretrained(lm_model)
+        self.lm_model = AutoModelForCausalLM.from_pretrained(lm_model).cuda().half()
         self.tokenizer = AutoTokenizer.from_pretrained(lm_model)
-        self.passage_qry_model = AutoModel.from_pretrained(retrieval_qry_model).half()
-        self.passage_ctx_model = AutoModel.from_pretrained(retrieval_ctx_model).half()
+        self.passage_qry_model = AutoModel.from_pretrained(retrieval_qry_model).cuda().half()
+        self.passage_ctx_model = AutoModel.from_pretrained(retrieval_ctx_model).cuda().half()
         self.passage_tokenizer = AutoTokenizer.from_pretrained(retrieval_qry_model)
         # Passage-level index
         self.threads = threads
@@ -229,16 +229,17 @@ class KNNTransformer(torch.nn.Module):
         doc_scores = sparse_doc_scores[:, :self.passage_k]
         return doc_scores, doc_ids
         
-        sparse_coef = (1 - sparse_doc_scores[:, 100] / sparse_doc_scores.max(-1))
-        dense_coef = (1 - np.where(dense_doc_scores[:, 100] > 0, dense_doc_scores[:, 100], 0) / dense_doc_scores.max(-1))
-        fusion_coef = (1 - self.fusion_coef) * (1 - sparse_coef) + self.fusion_coef * dense_coef
-        doc_ids, doc_scores = self.fusion(dense_doc_scores, dense_doc_ids, sparse_doc_scores, sparse_doc_ids, k=self.passage_k, fusion_coef=fusion_coef)
-        return doc_scores, doc_ids
+        # sparse_coef = (1 - sparse_doc_scores[:, 100] / sparse_doc_scores.max(-1))
+        # dense_coef = (1 - np.where(dense_doc_scores[:, 100] > 0, dense_doc_scores[:, 100], 0) / dense_doc_scores.max(-1))
+        # fusion_coef = (1 - self.fusion_coef) * (1 - sparse_coef) + self.fusion_coef * dense_coef
+        # doc_ids, doc_scores = self.fusion(dense_doc_scores, dense_doc_ids, sparse_doc_scores, sparse_doc_ids, k=self.passage_k, fusion_coef=fusion_coef)
+        # return doc_scores, doc_ids
 
     def compute_inter_coef(self, knn_scores):
         coef = torch.sigmoid((knn_scores.max(-1, True).values / knn_scores.min(-1, True).values  - self.alpha) / self.tau)
         return coef
 
+    @torch.no_grad()
     def forward(self, 
         tokens: torch.Tensor,
         cache: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
