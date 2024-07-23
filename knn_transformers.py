@@ -66,7 +66,6 @@ class TokenIndex(object):
             tok_mask = self.tok_mask
             vals = self.vals
             knn_ids = self.knn_ids
-
         distance = tok_square + (query_embeddings**2).sum(-1, True)
         distance = distance - 2 * torch.bmm(query_embeddings, tok_embeddings)
         distance = torch.where(tok_mask > 0, distance, float('inf'))

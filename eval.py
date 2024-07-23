@@ -82,7 +82,7 @@ def task_evaluation(args):
         output_dir = "/".join([args.output_dir, task_str])
         os.makedirs(output_dir, exist_ok=True)
         print(f"Evaluating {task_str}...")
-        dataset = load_datasets("/".join([args.data_dir, task_str, f"{args.mode}.10.jsonl"]), batch_size=args.batch_size)
+        dataset = load_datasets("/".join([args.data_dir, task_str, f"{args.mode}.jsonl"]), batch_size=args.batch_size)
         metrics, outputs = eval_generation(args, model, dataset, task_str)
         print(f"Saving outputs for {task_str}...")
         with jsonlines.open("/".join([output_dir, "results.jsonl"]), "w") as f:
