@@ -1,6 +1,6 @@
 import torch
 from typing import Optional, List, Tuple
-from knn_transformers import KNNTransformer
+from models.knn_transformers import KNNTransformer
 from transformers import AutoTokenizer
 
 @torch.inference_mode()

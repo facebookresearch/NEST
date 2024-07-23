@@ -39,11 +39,11 @@ WikiText-103, NQ, TriviaQA, HotpotQA, MedMCQA, Truthfulqa, FactScore
 
 ## Generation
 ```
-python test_generation.py
+python scripts/test_generation.py
 ```
 ## Evaluation
 ```
-bash eval.sh
+bash scripts/eval.sh
 ```
 ## License
 The code of NEST is licensed under CC-BY-NC.

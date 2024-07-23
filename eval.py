@@ -1,5 +1,5 @@
 from tasks import WikiText103Task, FactScoreTask, NQTask, TriviaQATask, MedMCQATask, HotPotQATask, TruthfulQATask
-from knn_transformers import KNNTransformer
+from models.knn_transformers import KNNTransformer
 from generation import generate
 from utils import load_datasets
 
