@@ -1,5 +1,5 @@
 # Nearest Neighbor Speculative Decoding for LLM Generation and Attribution
-This page describes how to implement [NEST](https://arxiv.org/abs/2405.19325) with dpr-scale.
+This page describes how to implement [NEST](https://arxiv.org/abs/2405.19325).
 ```
 @misc{li2024nearestneighborspeculativedecoding,
       title={Nearest Neighbor Speculative Decoding for LLM Generation and Attribution}, 
