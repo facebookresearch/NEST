@@ -1,0 +1,9 @@
+**__pycache__**
+log.txt
+*.log
+collections
+corpora
+datasets
+sparse_indexes
+dense_indexes
+results

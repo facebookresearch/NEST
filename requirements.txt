@@ -1,0 +1,7 @@
+torch-scatter=2.1.2
+transformers=4.48.0
+pyserini=0.35.0
+jsonlines=4.0.0
+openai=1.30.5
+rouge=1.0.1
+t5=0.9.4
