@@ -34,9 +34,9 @@ You can play with the hyperparameters in the demo to understand how they affect 
 The default models we use are Llama-2-chat-7b, 13b, and 70b. You can switch to other CausalLM models on Huggingface. Remember to change the `start_tag` and `end_tag` value for your models. We provide the links of the Llama-2-chat models we used in the following:
 | Models    | Huggingface Tag |
 | -------- | ------- |
-| Llama-2-chat-7b  | [meta-llama/Llama-2-7b-chat-hf](meta-llama/Llama-2-7b-chat-hf)    |
-| Llama-2-chat-13b | [meta-llama/Llama-2-13b-chat-hf](meta-llama/Llama-2-13b-chat-hf)     |
-| Llama-2-chat-70b    | [meta-llama/Llama-2-70b-chat-hf](meta-llama/Llama-2-70b-chat-hf)    |
+| Llama-2-chat-7b  | [meta-llama/Llama-2-7b-chat-hf](https://huggingface.co/meta-llama/Llama-2-7b-chat-hf)    |
+| Llama-2-chat-13b | [meta-llama/Llama-2-13b-chat-hf](https://huggingface.co/meta-llama/Llama-2-13b-chat-hf)     |
+| Llama-2-chat-70b    | [meta-llama/Llama-2-70b-chat-hf](https://huggingface.co/meta-llama/Llama-2-70b-chat-hf)    |
 
 Remeber to get the authorization from Meta before using the above models.
 
