@@ -1,4 +1,8 @@
 # Nearest Neighbor Speculative Decoding for LLM Generation and Attribution
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC_BY--NC_4.0-green.svg)](https://github.com/facebookresearch/NEST/blob/main/LICENSE)
+[![Arxiv](https://img.shields.io/badge/arXiv-2405.19325-B21A1B)](https://arxiv.org/abs/2405.19325)
+[![Tweet](https://img.shields.io/twitter/url/http/shields.io.svg?style=social)](https://x.com/alexlimh23/status/1796195387700621754)
+
 This is the official implementation of [Nearest Neighbor Speculative Decoding for LLM Generation and Attribution, NeurIPS 2024](https://arxiv.org/abs/2405.19325) using Huggingface.
 <img width="1108" alt="Screenshot 2025-04-22 at 10 35 41 PM" src="https://github.com/user-attachments/assets/90819320-6a78-49e3-b03f-39dead39bef8" />
 
